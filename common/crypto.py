@@ -41,7 +41,8 @@ def decifrar_aes_gcm(chave: bytes, pacote: bytes) -> bytes:
     aesgcm = AESGCM(chave)
     nonce = pacote[:12]
     texto_cifrado = pacote[12:]
-    return aesgcm.decrypt(nonce, texto_cifrado, associated_data=None)
+    texto_plano = aesgcm.decrypt(nonce, texto_cifrado, associated_data=None)
+    return texto_plano
 
 
 def derivar_chave(senha: bytes, salt: bytes) -> bytes:
@@ -52,7 +53,7 @@ def derivar_chave(senha: bytes, salt: bytes) -> bytes:
         salt: Salt aleatório em bytes.
 
     Returns:
-        bytes: Chave derivada de 16 bytes.
+        bytes: Chave derivada AES de 16 bytes.
     """
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
@@ -60,4 +61,5 @@ def derivar_chave(senha: bytes, salt: bytes) -> bytes:
         salt=salt,
         iterations=100_000,
     )
-    return kdf.derive(senha)
+    chave_derivada = kdf.derive(senha)
+    return chave_derivada
