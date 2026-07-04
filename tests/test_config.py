@@ -12,8 +12,11 @@ from common.config import (
     SVC_HOST,
     SVC_PORT,
     TAMANHO_CHAVE,
+    TAMANHO_SALT,
+    TAMANHO_NONCE,
     LIFETIME_TICKET,
     JANELA_AUTH,
+    USER_DB_PATH,
 )
 
 
@@ -67,3 +70,19 @@ class TestConstantesCriptografia:
     def test_janela_auth_e_300_segundos(self):
         """Janela de autenticação deve ser 5 minutos (300 segundos)."""
         assert JANELA_AUTH == 300
+
+
+class TestConstantesAdicionais:
+    """Constantes adicionadas posteriormente (issues #9 e #10)."""
+
+    def test_tamanho_salt_e_16_bytes(self):
+        """Salt de 16 bytes é o tamanho recomendado para PBKDF2."""
+        assert TAMANHO_SALT == 16
+
+    def test_tamanho_nonce_e_12_bytes(self):
+        """Nonce de 12 bytes é o tamanho padrão do AES-GCM."""
+        assert TAMANHO_NONCE == 12
+
+    def test_user_db_path_e_data(self):
+        """Base de usuários deve ficar em data/user_db.json."""
+        assert USER_DB_PATH == "data/user_db.json"

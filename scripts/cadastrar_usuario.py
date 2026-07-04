@@ -7,13 +7,12 @@ from common.crypto import derivar_chave
 from as_server.user_db import UserDB
 
 
-def main():
-    caminho = USER_DB_PATH
+def main(perguntar_usuario=input, perguntar_senha=getpass, caminho=USER_DB_PATH):
     banco = UserDB(caminho)
 
     print("\n\n### Cadastrar usuário ###")
-    nome = input("Usuário: ")
-    senha = getpass("Senha: ")
+    nome = perguntar_usuario("Usuário: ")
+    senha = perguntar_senha("Senha: ")
 
     if banco.buscar(nome) is not None:
         print(f"Usuário '{nome}' já existe.")
