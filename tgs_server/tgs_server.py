@@ -1,6 +1,10 @@
+import time
 import socket
 import threading
-from message import (
+from cryptography.exceptions import InvalidTag
+from common.crypto import decifrar_aes_gcm
+from .message import (
+    extrair_ticket,
     desempacotar,
     empacotar,
     MSG_TGS_REQUEST,
@@ -35,25 +39,30 @@ class TGSServer:
 
     def atender_cliente(self, con, addr):
         try:
+            # 1. Recebe a mensagem
             dados = con.recv(4096)
 
             if not dados:
                 return
 
+            # 2. Desempacota cabeçalho + payload
             tipo, payload = desempacotar(dados)
 
+            # 3. Verifica o tipo
             if tipo != MSG_TGS_REQUEST:
                 con.sendall(
                     empacotar(MSG_ERROR, b"Tipo de mensagem invalido")
                 )
                 return
 
+            # 4. Payload mínimo: tamanho do TGT
             if len(payload) < 2:
                 con.sendall(
                     empacotar(MSG_ERROR, b"Payload invalido")
                 )
                 return
 
+            # 5. Extrai TGT e nome do serviço
             tam_tgt = int.from_bytes(payload[:2], "big")
 
             if len(payload) < 2 + tam_tgt:
@@ -71,24 +80,68 @@ class TGSServer:
                 )
                 return
 
-            print(f"[TGS] Cliente {addr}")
-            print(f"[TGS] Serviço solicitado: {nome_servico}")
-            print(f"[TGS] TGT recebido ({len(tgt_cif)} bytes)")
+            # 6. Decifra o TGT
+            try:
+                nome_usuario, chave_sessao = self._validar_tgt(tgt_cif)
+            except ValueError as e:
+                con.sendall(
+                    empacotar(MSG_ERROR, str(e).encode())
+                )
+                return
+
+            print(f"[TGS] Cliente: {addr}")
+            print(f"[TGS] Usuario: {nome_usuario.decode()}")
+            print(f"[TGS] Servico: {nome_servico}")
+            print("[TGS] TGT valido")
 
         except Exception as e:
             print(f"Erro ao atender {addr}: {e}")
-            con.sendall(
-                empacotar(MSG_ERROR, b"Erro interno")
-            )
+
+            try:
+                con.sendall(
+                    empacotar(MSG_ERROR, b"Erro interno")
+                )
+            except Exception:
+                pass
 
         finally:
             con.close()
+    
+    def _validar_tgt(self, tgt_cif: bytes):
+        """Decifra e valida um TGT.
+
+        Args:
+            tgt_cif: TGT cifrado (nonce + ciphertext AES-GCM).
+
+        Returns:
+            tuple[bytes, bytes]:
+                (nome_usuario, chave_sessao)
+
+        Raises:
+            ValueError: Ticket inválido ou expirado.
+        """
+        try:
+            ticket = decifrar_aes_gcm(self.chave_as, tgt_cif)
+        except InvalidTag as exc:
+            raise ValueError("TGT invalido") from exc
+
+        try:
+            nome_usuario, chave_sessao, timestamp, lifetime = extrair_ticket(ticket)
+        except Exception as exc:
+            raise ValueError("Ticket invalido") from exc
+
+        agora = int(time.time())
+
+        if agora > timestamp + lifetime * 60:
+            raise ValueError("TGT expirado")
+
+        return nome_usuario, chave_sessao
 
 if __name__ == "__main__":
     servidor = TGSServer(
         "127.0.0.1",
         5451,
-        chave_as="chave_as",
-        chave_servico="chave_servico",
+        chave_as=b"0123456789abcdef",
+        chave_servico=b"fedcba9876543210",
     )
     servidor.iniciar()
