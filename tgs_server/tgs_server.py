@@ -1,9 +1,13 @@
+import os
 import time
 import socket
 import threading
 from cryptography.exceptions import InvalidTag
+from common.config import LIFETIME_TICKET
+from common.crypto import cifrar_aes_gcm
 from common.crypto import decifrar_aes_gcm
 from .message import (
+    criar_ticket,
     extrair_ticket,
     desempacotar,
     empacotar,
@@ -83,6 +87,10 @@ class TGSServer:
             # 6. Decifra o TGT
             try:
                 nome_usuario, chave_sessao = self._validar_tgt(tgt_cif)
+                service_ticket_cifrado, chave_cliente_servico = (
+                    self._gerar_service_ticket(nome_usuario)
+                )
+                print(f"[TGS] Service Ticket gerado ({len(service_ticket_cifrado)} bytes)")
             except ValueError as e:
                 con.sendall(
                     empacotar(MSG_ERROR, str(e).encode())
@@ -136,6 +144,34 @@ class TGSServer:
             raise ValueError("TGT expirado")
 
         return nome_usuario, chave_sessao
+    
+    def _gerar_service_ticket(self, nome_usuario: bytes):
+        """Gera um Service Ticket e uma nova chave de sessão Cliente↔Serviço.
+
+        Args:
+            nome_usuario: Nome do usuário autenticado.
+
+        Returns:
+            tuple[bytes, bytes]:
+                (service_ticket_cifrado, chave_sessao_cliente_servico)
+        """
+        chave_cliente_servico = os.urandom(16)
+
+        timestamp = int(time.time())
+
+        ticket = criar_ticket(
+            nome=nome_usuario,
+            chave_sessao=chave_cliente_servico,
+            timestamp=timestamp,
+            lifetime_min=LIFETIME_TICKET,
+        )
+
+        ticket_cifrado = cifrar_aes_gcm(
+            self.chave_servico,
+            ticket,
+        )
+
+        return ticket_cifrado, chave_cliente_servico
 
 if __name__ == "__main__":
     servidor = TGSServer(
