@@ -11,3 +11,6 @@ TAMANHO_NONCE = 12
 LIFETIME_TICKET = 480  # minutos (8h)
 JANELA_AUTH = 300      # segundos (5 min)
 USER_DB_PATH = "data/user_db.json"
+
+AS_MASTER_KEY_PATH = "keys/as_master.key"
+SVC_MASTER_KEY_PATH = "keys/service_master.key"

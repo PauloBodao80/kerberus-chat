@@ -4,8 +4,16 @@ import struct
 import threading
 import time
 
-from common.config import TGS_HOST, TGS_PORT, AS_MASTER_KEY
-from common.crypto import decifrar_aes_gcm, cifrar_aes_gcm, derivar_chave
+from cryptography.exceptions import InvalidTag
+
+from common.config import (
+    TGS_HOST,
+    TGS_PORT,
+    AS_MASTER_KEY_PATH,
+    SVC_MASTER_KEY_PATH,
+    LIFETIME_TICKET,
+)
+from common.crypto import decifrar_aes_gcm, cifrar_aes_gcm
 from common.protocol import (
     empacotar,
     desempacotar,
@@ -19,8 +27,6 @@ from common.protocol import (
 HEADER_FORMAT = ">HI"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 CHAVE_SESSAO_LENGTH = 16
-SERVICE_TICKET_LIFETIME = 60
-SERVICE_MASTER_KEY_PATH = "keys/service_master.key"
 
 
 class TGSServer:
@@ -41,36 +47,45 @@ class TGSServer:
         self.port = port
         self.socket: socket.socket | None = None
         self.running = False
-        self.service_master_key: bytes = self._carregar_chave_servico()
+        self.as_master_key: bytes = self._carregar_chave(
+            AS_MASTER_KEY_PATH, "AS"
+        )
+        self.service_master_key: bytes = self._carregar_chave(
+            SVC_MASTER_KEY_PATH, "servico"
+        )
 
     # ------------------------------------------------------------------
     # Carregamento de chaves
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _carregar_chave_servico() -> bytes:
+    def _carregar_chave(caminho: str, nome: str) -> bytes:
         """
-        Carrega a chave mestra do servico a partir do arquivo
-        'keys/service_master.key'.
+        Carrega uma chave mestra de 16 bytes a partir de um arquivo.
 
-        O arquivo deve conter exatamente 16 bytes (chave AES-128).
-        Se o arquivo nao existir, uma excecao sera levantada, pois o TGS
-        nao pode operar sem a chave do servico.
+        Args:
+            caminho: Caminho do arquivo de chave.
+            nome: Nome descritivo para mensagens de log.
+
+        Returns:
+            bytes: Chave de 16 bytes.
+
+        Raises:
+            FileNotFoundError: Se o arquivo nao existir.
+            ValueError: Se o conteudo nao tiver exatamente 16 bytes.
         """
-        if not os.path.exists(SERVICE_MASTER_KEY_PATH):
+        if not os.path.exists(caminho):
             raise FileNotFoundError(
-                f"Arquivo de chave do servico nao encontrado: "
-                f"{SERVICE_MASTER_KEY_PATH}"
+                f"Arquivo de chave nao encontrado: {caminho}"
             )
-        with open(SERVICE_MASTER_KEY_PATH, "rb") as arquivo:
+        with open(caminho, "rb") as arquivo:
             chave = arquivo.read()
         if len(chave) != 16:
             raise ValueError(
-                f"Chave do servico invalida: esperado 16 bytes, "
+                f"Chave invalida ({nome}): esperado 16 bytes, "
                 f"obtido {len(chave)} bytes"
             )
-        print(f"[TGS] Chave mestra do servico carregada de "
-              f"{SERVICE_MASTER_KEY_PATH}")
+        print(f"[TGS] Chave mestra {nome} carregada de {caminho}")
         return chave
 
     # ------------------------------------------------------------------
@@ -182,11 +197,13 @@ class TGSServer:
 
             # 5. Decifrar o TGT usando as_master_key e decifrar_aes_gcm
             try:
-                tgt_decifrado = decifrar_aes_gcm(AS_MASTER_KEY, tgt_cifrado)
+                tgt_decifrado = decifrar_aes_gcm(
+                    self.as_master_key, tgt_cifrado
+                )
                 print("[TGS] TGT decifrado com sucesso usando as_master_key")
-            except Exception as exc:
-                print(f"[TGS] Falha ao decifrar TGT: {exc}")
-                self._enviar_erro(conn, "Falha ao decifrar TGT")
+            except InvalidTag:
+                print("[TGS] Falha ao decifrar TGT: InvalidTag (chave errada)")
+                self._enviar_erro(conn, "TGT invalido")
                 return
 
             # 6. Extrair os campos do ticket usando extrair_ticket
@@ -223,11 +240,11 @@ class TGSServer:
 
             # 9. Montar o Service Ticket usando criar_ticket
             service_ticket = criar_ticket(
-                nome, k_c_svc, tempo_atual, SERVICE_TICKET_LIFETIME
+                nome, k_c_svc, tempo_atual, LIFETIME_TICKET
             )
             print(
                 f"[TGS] Service Ticket montado para o usuario {nome_str} "
-                f"(lifetime={SERVICE_TICKET_LIFETIME} min)"
+                f"(lifetime={LIFETIME_TICKET} min)"
             )
 
             # ------------------------------------------------------------------
