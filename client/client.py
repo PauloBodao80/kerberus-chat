@@ -257,8 +257,30 @@ class ClienteKerberos:
             self.fechar()
 
 
-def main():
-    """Ponto de entrada do cliente Kerberos."""
+def _cadastrar_usuario():
+    """Fluxo de cadastro de novo usuario (idem scripts/cadastrar_usuario.py)."""
+    from os import urandom
+    from common.config import USER_DB_PATH, TAMANHO_SALT
+    from common.crypto import derivar_chave
+    from as_server.user_db import UserDB
+
+    banco = UserDB(USER_DB_PATH)
+
+    print("\n### Cadastrar usuario ###")
+    nome = input("Usuario: ").strip()
+    senha = getpass.getpass("Senha: ")
+
+    if banco.buscar(nome) is not None:
+        print(f"Usuario '{nome}' ja existe.")
+    else:
+        salt = urandom(TAMANHO_SALT)
+        hash_chave = derivar_chave(senha.encode(), salt)
+        banco.cadastrar(nome, salt, hash_chave)
+        print(f"Usuario '{nome}' cadastrado com sucesso!")
+
+
+def _login():
+    """Fluxo Kerberos completo: AS -> TGS -> Servico -> Chat."""
     cliente = ClienteKerberos()
     try:
         cliente.executar_passo1()
@@ -268,6 +290,30 @@ def main():
     except Exception as e:
         print(f"\n[FALHA] {e}")
         cliente.fechar()
+
+
+def main():
+    """Ponto de entrada do cliente Kerberos com menu de cadastro/login."""
+    while True:
+        print("\n" + "=" * 40)
+        print("  KERBEROS CHAT — Cliente")
+        print("=" * 40)
+        print("  1. Cadastrar usuario")
+        print("  2. Fazer login")
+        print("  0. Sair")
+        print()
+
+        opcao = input("Opcao: ").strip()
+
+        if opcao == "1":
+            _cadastrar_usuario()
+        elif opcao == "2":
+            _login()
+        elif opcao == "0":
+            print("Ate logo!")
+            break
+        else:
+            print("Opcao invalida.")
 
 
 if __name__ == "__main__":
