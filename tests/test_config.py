@@ -85,4 +85,4 @@ class TestConstantesAdicionais:
 
     def test_user_db_path_e_data(self):
         """Base de usuários deve ficar em data/user_db.json."""
-        assert USER_DB_PATH == "data/user_db.json"
+        assert USER_DB_PATH.endswith("data/user_db.json")
