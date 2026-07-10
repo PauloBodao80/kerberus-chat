@@ -37,6 +37,16 @@ class UserDB:
         """
         return self._dados["users"].get(nome)
 
+    def recarregar(self) -> None:
+        """Relê o arquivo JSON do disco, atualizando os dados em memória.
+
+        Útil quando outro processo (ex.: cadastro) modifica o arquivo
+        enquanto o servidor está rodando.
+        """
+        if path.exists(self._caminho):
+            with open(self._caminho, "r") as f:
+                self._dados = json.load(f)
+
     def cadastrar(self, nome: str, salt: bytes, hash_chave: bytes):
         """Adiciona ou atualiza um usuário e persiste no arquivo.
 
