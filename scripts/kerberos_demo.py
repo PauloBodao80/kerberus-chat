@@ -47,8 +47,13 @@ def main():
 
     # Carrega recursos compartilhados
     user_db = UserDB(USER_DB_PATH)
-    as_key = _carregar_chave(AS_MASTER_KEY_PATH, "AS")
-    svc_key = _carregar_chave(SVC_MASTER_KEY_PATH, "Servico")
+    try:
+        as_key = _carregar_chave(AS_MASTER_KEY_PATH, "AS")
+        svc_key = _carregar_chave(SVC_MASTER_KEY_PATH, "Servico")
+    except FileNotFoundError as e:
+        print(f"\n[ERRO] Chave nao encontrada: {e}")
+        print("Execute 'gerar-chaves' primeiro para gerar as chaves mestras.")
+        sys.exit(1)
 
     # Cria os servidores (ainda nao iniciam)
     as_srv = ASServer(
