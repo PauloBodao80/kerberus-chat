@@ -51,9 +51,10 @@ CLIENTE                    AS                        TGS                    SERV
   │  -> Autenticação mútua OK!                                              │
   │                                                                          │
   ├── MSG_CHAT ────────────────────────────────────────────────────────────►│
-  │  "Olá, servidor!"                                                        │
-  │◄── MSG_ECHO ────────────────────────────────────────────────────────────┤
-  │  "eco: Olá, servidor!"                                                   │
+  │  "destinatario mensagem"                             │
+  │                                                                          │  Encaminha via MSG_RELAY
+  │◄── MSG_RELAY ──────────────────────────────────────────────────────────┤
+  │  [remetente] mensagem                                                    │
 ```
 
 ---
@@ -95,10 +96,38 @@ tgs-server
 service-server
 ```
 
+> Alternativa: inicie os 3 servidores de uma vez em um único terminal.
+> ```bash
+> kerberos-servidor
+> ```
+
 ### 4. Executar o cliente
 
 ```bash
 kerberos-cliente
+```
+
+O cliente exibe um menu:
+```
+  1. Cadastrar usuario
+  2. Fazer login
+  0. Sair
+```
+
+A opção 1 registra um novo usuário e retorna ao menu. A opção 2 inicia o fluxo Kerberos (AS → TGS → Serviço → Chat).
+
+### 5. Testes de ataque (opcional)
+
+```bash
+simular-ataque
+```
+
+Executa 4 cenários de ataque contra o sistema (requer servidores rodando).
+
+### 6. Testes unitários
+
+```bash
+pytest tests/ -v
 ```
 
 ---
@@ -114,43 +143,49 @@ kerberos-chat/
 │   └── protocol.py                 # Re-exporta tgs_server/message.py
 │
 ├── as_server/                      ← Authentication Server
-│   └── as_server.py                # Servidor TCP que emite TGTs
+│   ├── as_server.py                # Servidor TCP que emite TGTs
+│   └── user_db.py                  # Banco de usuários (JSON)
 │
 ├── tgs_server/                     ← Ticket Granting Server
 │   ├── message.py                  # Empacotar/desempacotar, tipos, tickets
 │   └── tgs_server.py               # Valida TGT, emite Service Ticket
 │
 ├── service/                        ← Serviço Protegido
-│   └── service_server.py           # Valida Service Ticket + autenticação mútua
+│   └── service_server.py           # Valida Service Ticket + relay de chat
 │
 ├── client/                         ← Cliente
-│   └── client.py                   # Orquestra fluxo Kerberos completo
+│   └── client.py                   # Orquestra fluxo Kerberos + menu cadastro/login
 │
 ├── keys/                           ← Chaves mestras (geradas com gerar-chaves)
 │   ├── as_master.key
 │   └── service_master.key
 │
+├── data/                           ← Dados de usuários (runtime)
+│   └── user_db.json                # {"users": {"nome": {"salt": hex, "hash_chave": hex}}}
+│
 ├── docs/
 │   ├── issues_projeto.md           # 40 tarefas (issues) do projeto
+│   ├── issues_pendentes.md         # Issues de auditoria e correções
 │   └── planejamento.md             # Divisão de tarefas, relatório, vídeo
 │
 ├── scripts/
-│   ├── __init__.py
 │   ├── gerar_chaves.py             # Gera as chaves mestras
 │   ├── cadastrar_usuario.py        # Adiciona usuário ao JSON
-│   └── simular_ataque.py            # Simula ataques (4 cenários)
+│   ├── kerberos_demo.py            # Lança os 3 servidores em threads
+│   └── simular_ataque.py           # 4 cenários de ataque (requer servidores)
 │
-├── tests/                          ← Testes unitários (pytest)
+├── tests/                          ← Testes unitários (pytest, 83 testes)
+│   ├── conftest.py                 # Fixtures compartilhadas
 │   ├── test_cadastrar_usuario.py
 │   ├── test_config.py
 │   ├── test_crypto.py
 │   ├── test_gerar_chaves.py
 │   ├── test_message.py
 │   ├── test_tgs_server.py
-│   └── test_user_db.py
+│   ├── test_user_db.py
+│   └── test_as_server_e2e.py       # Testes de integração do AS
 │
-├── pyproject.toml                  # Configuração do projeto + console_scripts
-├── requirements.txt                # cryptography, pytest
+├── pyproject.toml                  # Configuração do projeto + entry-points
 ├── .gitignore
 └── README.md
 ```
@@ -207,7 +242,7 @@ Esse cabeçalho é montado pela função `empacotar()` em `common/protocol.py`.
 | # | Constante | Origem → Destino | Payload |
 |---|-----------|-------------------|---------|
 | 1 | `MSG_AUTH_REQUEST` | Cliente → AS | `nome_usuario (bytes)` |
-| 2 | `MSG_AUTH_REPLY` | AS → Cliente | `TGT_cif(12+*) + K_c_AS_cif(12+*)` |
+| 2 | `MSG_AUTH_REPLY` | AS → Cliente | `salt(16) + [4B tam_tgt][TGT_cif] + [4B tam_k][K_c_AS_cif]` |
 | 3 | `MSG_TGS_REQUEST` | Cliente → TGS | `[4B tam_tgt][TGT][4B tam_svc][nome]` |
 | 4 | `MSG_TGS_REPLY` | TGS → Cliente | `[4B tam_st][ST][4B tam_ks][K_c_svc]` |
 | 5 | `MSG_SVC_REQUEST` | Cliente → Serviço | `[4B tam_st][ST][4B tam_auth][authenticator]` |
@@ -215,6 +250,7 @@ Esse cabeçalho é montado pela função `empacotar()` em `common/protocol.py`.
 | 7 | `MSG_CHAT` | Cliente → Serviço | `texto (bytes)` |
 | 8 | `MSG_ECHO` | Serviço → Cliente | `eco do texto (bytes)` |
 | 9 | `MSG_ERROR` | Qualquer → Qualquer | `mensagem de erro (bytes)` |
+| 10 | `MSG_RELAY` | Serviço → Cliente | `[2B len_rem][remetente][mensagem]` |
 
 > `(12+*)` = nonce AES-GCM (12 bytes) + ciphertext de tamanho variável  
 > `(12+8)` = nonce (12 bytes) + ciphertext de 8 bytes (apenas um timestamp)  
@@ -224,10 +260,11 @@ Esse cabeçalho é montado pela função `empacotar()` em `common/protocol.py`.
 
 - **MSG_TGS_REQUEST e MSG_TGS_REPLY**: blocos de tamanho variável (TGT, Service Ticket, chave de sessão) são sempre precedidos por um **prefixo de 4 bytes** com seu comprimento.
 - **MSG_SVC_REQUEST**: mesma lógica — Service Ticket e authenticator têm prefixos de 4 bytes.
-- **MSG_AUTH_REPLY**: contém **dois blocos** cifrados independentemente — o TGT (cifrado com `as_master_key`) e a session key (cifrada com a chave derivada da senha do usuário). Cada bloco tem seu próprio nonce de 12 bytes e prefixo de 4 bytes.
+- **MSG_AUTH_REPLY**: contém **salt de 16 bytes** no início, seguido por **dois blocos** cifrados independentemente — o TGT (cifrado com `as_master_key`) e K_c_AS (cifrada com a chave derivada da senha do usuário). Cada bloco cifrado tem prefixo de 4 bytes com seu tamanho.
 - **MSG_SVC_REQUEST**: o authenticator é a estrutura `{nome_usuario(2+*) + timestamp(8)}` cifrada com `K_c_svc`.
 - **MSG_SVC_REPLY**: o timestamp do authenticator **+1**, cifrado com `K_c_svc` — prova que o serviço conhece a chave (autenticação mútua).
 - O `nome_servico` em `MSG_TGS_REQUEST` é um identificador simples em bytes (ex: `b"chat"`, `b"arquivos"`).
+- **MSG_RELAY**: o payload é `[2 bytes len_remetente][remetente][mensagem]` — encaminhamento de mensagens entre usuários conectados.
 
 ---
 
