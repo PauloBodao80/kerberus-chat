@@ -11,11 +11,9 @@ Antes de rodar, certifique-se de que:
   2. Ha usuarios cadastrados:  cadastrar-usuario
 """
 
-import os
 import threading
 import time
 import sys
-from pathlib import Path
 
 # Importa os servidores
 from as_server.as_server import ASServer
@@ -42,14 +40,6 @@ def _carregar_chave(path, nome):
 
 
 def main():
-    # Garante que o diretorio de trabalho e a raiz do projeto.
-    # Isso faz os caminhos relativos (keys/, data/) funcionarem
-    # independentemente de onde o comando foi executado.
-    raiz = Path(__file__).resolve().parent.parent
-    if Path.cwd() != raiz:
-        print(f"[demo] Mudando para raiz do projeto: {raiz}")
-        os.chdir(raiz)
-
     print("=" * 50)
     print("  KERBEROS CHAT — Servidores")
     print("=" * 50)
