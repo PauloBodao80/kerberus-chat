@@ -1,27 +1,35 @@
-"""Servico Protegido: valida Service Ticket, autenticacao mutua e eco.
+"""Servico Protegido: valida Service Ticket, autenticacao mutua e relay.
 
 Recebe requisicoes do cliente (MSG_SVC_REQUEST), valida o Service Ticket
-e o authenticator, realiza autenticacao mutua (timestamp+1) e ecoa
-mensagens de chat em texto claro.
+e o authenticator, realiza autenticacao mutua (timestamp+1) e encaminha
+mensagens de chat entre usuarios conectados (relay).
+
+Cada cliente, apos autenticado, envia mensagens no formato:
+  "destinatario texto da mensagem"
+O servico extrai o destinatario (primeira palavra) e encaminha ao socket
+correspondente.
 """
 
-import socket
-import threading
-import struct
-import time
 import os
+import socket
+import struct
+import threading
+import time
 
 from common.config import SVC_HOST, SVC_PORT, JANELA_AUTH
 from common.crypto import decifrar_aes_gcm, cifrar_aes_gcm
 from common.protocol import (
-    desempacotar, empacotar, extrair_ticket,
-    MSG_SVC_REQUEST, MSG_SVC_REPLY, MSG_CHAT, MSG_ECHO, MSG_ERROR
+    empacotar, extrair_ticket,
+    MSG_SVC_REQUEST, MSG_SVC_REPLY, MSG_CHAT, MSG_RELAY, MSG_ERROR,
 )
 
+
 class ServicoKerberos:
-    """
-    Servidor de Serviço (Grupo 4).
-    Valida o Service Ticket e o Authenticator para estabelecer o canal seguro.
+    """Servidor de Servico: relay de mensagens entre clientes Kerberos.
+
+    Mantem um dicionario de clientes conectados (nome -> socket) e
+    encaminha mensagens entre eles. Cada mensagem do cliente carrega
+    o nome do destinatario como primeira palavra.
     """
 
     def __init__(self, host=SVC_HOST, porta=SVC_PORT):
@@ -31,143 +39,237 @@ class ServicoKerberos:
         self._socket = None
         self._rodando = False
 
+        # Tabela de clientes conectados: {nome_usuario: socket}
+        self._clientes: dict[str, socket.socket] = {}
+        self._lock = threading.Lock()
+
     def _carregar_chave(self):
-        """Carrega a chave mestra do serviço (Issue #21)."""
+        """Carrega a chave mestra do servico."""
         caminho = "keys/service_master.key"
         if not os.path.exists(caminho):
-            raise FileNotFoundError(f"Chave mestra do serviço não encontrada em {caminho}")
+            raise FileNotFoundError(
+                f"Chave mestra do servico nao encontrada em {caminho}"
+            )
         with open(caminho, "rb") as f:
             return f.read()
 
     def iniciar(self):
-        """Inicia o loop do servidor (Issue #21)."""
+        """Inicia o loop do servidor, aceitando conexoes em threads."""
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._socket.bind((self.host, self.porta))
         self._socket.listen(5)
         self._rodando = True
-        print(f"[SERVIÇO] Escutando em {self.host}:{self.porta}")
+        print(f"[SERVICO] Escutando em {self.host}:{self.porta}")
 
         try:
             while self._rodando:
                 con, addr = self._socket.accept()
-                threading.Thread(target=self.atender_cliente, args=(con, addr), daemon=True).start()
+                threading.Thread(
+                    target=self.atender_cliente,
+                    args=(con, addr),
+                    daemon=True,
+                ).start()
         except KeyboardInterrupt:
-            print("\n[SERVIÇO] Encerrando...")
+            print("\n[SERVICO] Encerrando...")
         finally:
-            if self._socket: self._socket.close()
+            if self._socket:
+                self._socket.close()
 
     def _recv_exato(self, con, n):
+        """Le exatamente n bytes do socket.
+
+        Retorna None se a conexao for fechada antes de completar.
+        """
         dados = b""
         while len(dados) < n:
             chunk = con.recv(n - len(dados))
-            if not chunk: return None
+            if not chunk:
+                return None
             dados += chunk
         return dados
 
-    def _loop_chat(self, con, nome_usuario, k_c_svc):
-        """Loop de eco do chat após autenticação mútua (Issue #26).
+    # ------------------------------------------------------------------
+    # Relay: encaminhamento de mensagens entre clientes
+    # ------------------------------------------------------------------
 
-        Recebe mensagens MSG_CHAT do cliente e responde com MSG_ECHO.
-        O chat é em texto claro por decisão didática — o foco do projeto
-        é o protocolo Kerberos, não a confidencialidade das mensagens.
+    def _loop_relay(self, con, nome_usuario):
+        """Loop de relay: recebe mensagens e encaminha ao destinatario.
+
+        Formato da mensagem do cliente (MSG_CHAT):
+          "destinatario texto livre ate o fim"
+
+        O servico extrai o destinatario (tudo antes do primeiro espaco)
+        e encaminha o restante como MSG_RELAY para o socket do destino.
+
+        Formato do MSG_RELAY enviado ao destinatario:
+          [2 bytes len_remetente][remetente][texto da mensagem]
 
         Args:
-            con: Socket conectado ao cliente.
-            nome_usuario: Nome do usuário autenticado (bytes).
-            k_c_svc: Chave de sessão cliente-serviço (não usada no chat,
-                     mantida para compatibilidade com futura extensão).
+            con: Socket do cliente remetente.
+            nome_usuario: Nome do cliente remetente (bytes).
         """
-        print(f"[SERVIÇO] Chat iniciado com {nome_usuario.decode()}.")
+        nome_str = nome_usuario.decode()
+        print(f"[SERVICO] {nome_str} entrou no chat.")
+
         while True:
-            # Lê o cabeçalho de 6 bytes: tipo (2B) + tamanho (4B)
+            # Le cabecalho: 2B tipo + 4B tamanho
             header = self._recv_exato(con, 6)
             if not header:
-                print(f"[SERVIÇO] Cliente {nome_usuario.decode()} desconectou.")
                 break
 
-            tipo, tamanho = desempacotar(header)
+            tipo, tamanho = struct.unpack(">HI", header)
 
-            # Lê o payload da mensagem
+            # Le o payload
             payload = self._recv_exato(con, tamanho)
             if not payload:
-                print(f"[SERVIÇO] Conexão perdida com {nome_usuario.decode()}.")
                 break
 
             if tipo == MSG_CHAT:
-                # Chat em texto claro — foco didático no Kerberos
                 texto = payload.decode("utf-8", errors="replace")
-                print(f"[SERVIÇO] {nome_usuario.decode()}: {texto}")
 
-                # Ecoa a mensagem de volta com prefixo "eco: "
-                resposta = f"eco: {texto}".encode("utf-8")
-                con.sendall(empacotar(MSG_ECHO, resposta))
+                # Extrai destinatario (primeira palavra antes do espaco)
+                partes = texto.split(" ", 1)
+                if len(partes) < 2:
+                    # Sem destinatario — ignora
+                    continue
+
+                destinatario = partes[0]
+                mensagem = partes[1]
+
+                print(f"[SERVICO] {nome_str} -> {destinatario}: {mensagem}")
+
+                # Busca o socket do destinatario
+                with self._lock:
+                    dest_con = self._clientes.get(destinatario)
+
+                if dest_con:
+                    # Monta MSG_RELAY: [2B len_remet][remet][mensagem]
+                    rem_bytes = nome_usuario
+                    fwd = (
+                        struct.pack(">H", len(rem_bytes))
+                        + rem_bytes
+                        + mensagem.encode("utf-8")
+                    )
+                    try:
+                        dest_con.sendall(empacotar(MSG_RELAY, fwd))
+                    except OSError:
+                        print(
+                            f"[SERVICO] Falha ao enviar para {destinatario}"
+                        )
+                else:
+                    print(
+                        f"[SERVICO] Destinatario '{destinatario}' "
+                        f"nao encontrado."
+                    )
             else:
-                # Tipo inesperado — encerra o chat
-                print(f"[SERVIÇO] Tipo inesperado {tipo}, encerrando chat.")
+                # Tipo inesperado — encerra
                 break
 
+    # ------------------------------------------------------------------
+    # Handler de conexao (autenticacao Kerberos + relay)
+    # ------------------------------------------------------------------
+
     def atender_cliente(self, con, addr):
-        """Handler principal (Issues #22 a #25)."""
+        """Autentica o cliente via Kerberos e entra no loop de relay.
+
+        Fluxo:
+          1. Recebe MSG_SVC_REQUEST (Service Ticket + Authenticator)
+          2. Valida o ticket e o authenticator
+          3. Autenticacao mutua (timestamp + 1)
+          4. Registra o cliente na tabela de conectados
+          5. Entra no loop de relay
+          6. Remove o cliente ao desconectar
+        """
+        nome_str = None
         try:
-            # 1. Receber Requisição (Issue #22)
+            # 1. Receber MSG_SVC_REQUEST
             header = self._recv_exato(con, 6)
-            if not header: return
-            tipo, tamanho = desempacotar(header)
-            
+            if not header:
+                return
+
+            tipo, tamanho = struct.unpack(">HI", header)
             if tipo != MSG_SVC_REQUEST:
                 raise ValueError("Tipo de mensagem incorreto.")
 
             payload = self._recv_exato(con, tamanho)
-            
-            # Extração: [4b tam_st][ST] + [4b tam_auth][Auth]
+            if not payload:
+                return
+
+            # Extrai: [4B tam_st][ST] + [4B tam_auth][Auth]
             offset = 0
-            tam_st = struct.unpack(">I", payload[offset:offset+4])[0]
-            st_cifrado = payload[offset+4 : offset+4+tam_st]
-            
+            tam_st = struct.unpack(">I", payload[offset:offset + 4])[0]
+            st_cifrado = payload[offset + 4:offset + 4 + tam_st]
+
             offset += 4 + tam_st
-            tam_auth = struct.unpack(">I", payload[offset:offset+4])[0]
-            auth_cifrado = payload[offset+4 : offset+4+tam_auth]
+            tam_auth = struct.unpack(">I", payload[offset:offset + 4])[0]
+            auth_cifrado = payload[offset + 4:offset + 4 + tam_auth]
 
-            # 2. Validar Service Ticket (Issue #23)
-            print(f"[SERVIÇO] Validando ticket de {addr}...")
-            st_decifrado = decifrar_aes_gcm(self.service_master_key, st_cifrado)
+            # 2. Validar Service Ticket
+            print(f"[SERVICO] Validando ticket de {addr}...")
+            st_decifrado = decifrar_aes_gcm(
+                self.service_master_key, st_cifrado
+            )
             nome_tk, k_c_svc, ts_tk, life_tk = extrair_ticket(st_decifrado)
-            
-            # 3. Validar Authenticator (Issue #24)
+
+            # 3. Validar Authenticator
             auth_decifrado = decifrar_aes_gcm(k_c_svc, auth_cifrado)
-            
-            # Formato Auth: [2b len_nome][nome][8b timestamp]
+
+            # Formato Auth: [2B len_nome][nome][8B timestamp]
             len_n = struct.unpack(">H", auth_decifrado[:2])[0]
-            nome_auth = auth_decifrado[2 : 2+len_n]
-            ts_auth = struct.unpack(">Q", auth_decifrado[2+len_n : 2+len_n+8])[0]
+            nome_auth = auth_decifrado[2:2 + len_n]
+            ts_auth = struct.unpack(
+                ">Q", auth_decifrado[2 + len_n:2 + len_n + 8]
+            )[0]
 
-            # Verificações de segurança
             if nome_auth != nome_tk:
-                raise PermissionError("Usuário do Authenticator não condiz com o Ticket.")
-            
-            if abs(time.time() - ts_auth) > JANELA_AUTH:
-                raise PermissionError("Timestamp fora da janela (possível Replay Attack).")
+                raise PermissionError(
+                    "Usuario do Authenticator nao condiz com o Ticket."
+                )
 
-            # 4. Autenticação Mútua (Issue #25)
-            print(f"[SERVIÇO] Autenticação mútua OK para {nome_tk.decode()}.")
-            resp_cifrada = cifrar_aes_gcm(k_c_svc, struct.pack(">Q", ts_auth + 1))
+            if abs(time.time() - ts_auth) > JANELA_AUTH:
+                raise PermissionError(
+                    "Timestamp fora da janela (possivel Replay Attack)."
+                )
+
+            # 4. Autenticacao Mutua
+            nome_str = nome_tk.decode()
+            print(f"[SERVICO] Autenticacao mutua OK para {nome_str}.")
+            resp_cifrada = cifrar_aes_gcm(
+                k_c_svc, struct.pack(">Q", ts_auth + 1)
+            )
             con.sendall(empacotar(MSG_SVC_REPLY, resp_cifrada))
 
-            # 5. Loop de chat (Issue #26)
-            # O chat é mantido em texto claro por decisão didática —
-            # o foco do projeto é o protocolo Kerberos.
-            self._loop_chat(con, nome_tk, k_c_svc)
+            # 5. Registrar cliente na tabela de conectados
+            with self._lock:
+                self._clientes[nome_str] = con
+            print(f"[SERVICO] {nome_str} registrado. "
+                  f"Conectados: {list(self._clientes.keys())}")
+
+            # 6. Loop de relay
+            self._loop_relay(con, nome_tk)
 
         except Exception as e:
-            print(f"[SERVIÇO] Erro: {e}")
-            try: con.sendall(empacotar(MSG_ERROR, str(e).encode()))
-            except: pass
+            print(f"[SERVICO] Erro ({addr}): {e}")
+            try:
+                con.sendall(empacotar(MSG_ERROR, str(e).encode()))
+            except OSError:
+                pass
         finally:
-            con.close()
+            # Remove o cliente da tabela ao desconectar
+            if nome_str:
+                with self._lock:
+                    self._clientes.pop(nome_str, None)
+                print(f"[SERVICO] {nome_str} desconectado. "
+                      f"Conectados: {list(self._clientes.keys())}")
+            try:
+                con.close()
+            except OSError:
+                pass
+
 
 def main():
-    """Ponto de entrada do servidor de servico."""
+    """Ponto de entrada do servidor de servico (relay)."""
     svc = ServicoKerberos()
     svc.iniciar()
 

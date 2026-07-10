@@ -11,6 +11,7 @@ MSG_SVC_REPLY = 6     # Serviço → Cliente
 MSG_CHAT = 7          # Cliente → Serviço (dados do chat)
 MSG_ECHO = 8          # Serviço → Cliente (eco da mensagem)
 MSG_ERROR = 9         # Qualquer direção
+MSG_RELAY = 10        # Serviço → Cliente (mensagem encaminhada de outro usuário)
 
 _HEADER_FORMAT = ">HI"  # unsigned short (tipo) + unsigned int (tamanho), big-endian
 _HEADER_SIZE = struct.calcsize(_HEADER_FORMAT)  # 6

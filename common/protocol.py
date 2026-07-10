@@ -19,6 +19,7 @@ from tgs_server.message import (
     MSG_CHAT,
     MSG_ECHO,
     MSG_ERROR,
+    MSG_RELAY,
     # Funcoes de empacotamento
     empacotar,
     desempacotar,
@@ -37,6 +38,7 @@ __all__ = [
     "MSG_CHAT",
     "MSG_ECHO",
     "MSG_ERROR",
+    "MSG_RELAY",
     "empacotar",
     "desempacotar",
     "criar_ticket",
