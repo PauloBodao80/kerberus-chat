@@ -22,7 +22,6 @@ from common.protocol import (
     MSG_AUTH_REQUEST,
     MSG_AUTH_REPLY,
     MSG_ERROR,
-    desempacotar,
     empacotar,
     criar_ticket,
 )
@@ -178,7 +177,7 @@ class ASServer:
             if header is None:
                 return
 
-            tipo, tamanho = desempacotar(header)
+            tipo, tamanho = struct.unpack(">HI", header)
             if tipo != MSG_AUTH_REQUEST:
                 self._enviar_erro(con)
                 return
@@ -195,6 +194,7 @@ class ASServer:
                 self._enviar_erro(con)
                 return
 
+            self.user_db.recarregar()
             usuario = self.user_db.buscar(nome_usuario)
             if usuario is None:
                 self._enviar_erro(con)
@@ -219,11 +219,10 @@ class ASServer:
             timestamp = int(time.time())
             validade = 3600
             ticket = criar_ticket(
-                usuario=nome_usuario,
-                servico="TGS",
+                nome=nome_usuario.encode(),
+                chave_sessao=K_c_AS,
                 timestamp=timestamp,
-                validade=validade,
-                chave=K_c_AS,
+                lifetime_min=validade,
             )
 
             # Cifra o TGT com a chave mestra do AS (issue #2)
